@@ -496,64 +496,154 @@ class AdminWindow:
             self.import_folder_path(folder_path)
     
     def import_files(self):
-        """Importer des fichiers dans un dossier"""
-        # Demander d'abord de sélectionner un dossier de destination
+        """Importer des fichiers directement (NOUVEAU - SANS SÉLECTION DE DOSSIER OBLIGATOIRE)"""
+        
+        # Récupérer les dossiers existants
         folders = self.db.get_all_folders(panel=self.panel)
         
-        if not folders:
-            messagebox.showwarning(
-                "Attention",
-                f"⚠️ Veuillez d'abord créer un dossier dans {self.panel_info['name']}"
-            )
-            return
-        
-        # Créer une fenêtre de sélection de dossier
+        # Créer une fenêtre de sélection
         selector = ctk.CTkToplevel(self.root)
-        selector.title("Sélectionner un dossier")
-        selector.geometry("400x500")
+        selector.title("Importer des fichiers")
+        selector.geometry("500x600")
         selector.transient(self.root)
         selector.grab_set()
         
         # Centrer
         selector.update_idletasks()
-        x = (selector.winfo_screenwidth() // 2) - 200
-        y = (selector.winfo_screenheight() // 2) - 250
-        selector.geometry(f'400x500+{x}+{y}')
+        x = (selector.winfo_screenwidth() // 2) - 250
+        y = (selector.winfo_screenheight() // 2) - 300
+        selector.geometry(f'500x600+{x}+{y}')
+        
+        # En-tête
+        header = ctk.CTkFrame(
+            selector,
+            height=80,
+            fg_color=(self.panel_info['color'], self.panel_info['color']),
+            corner_radius=0
+        )
+        header.pack(fill="x")
+        header.pack_propagate(False)
         
         ctk.CTkLabel(
+            header,
+            text=f"📄 Importer des fichiers",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color="white"
+        ).pack(pady=25)
+        
+        # Instructions
+        instructions = ctk.CTkFrame(
             selector,
-            text=f"📁 Choisir le dossier dans {self.panel_info['name']}",
-            font=ctk.CTkFont(size=16, weight="bold")
-        ).pack(pady=20)
+            fg_color=("#e7f3ff", "#1a3a52"),
+            corner_radius=15
+        )
+        instructions.pack(fill="x", padx=20, pady=20)
         
-        selected_folder_id = [None]
+        ctk.CTkLabel(
+            instructions,
+            text=f"📌 Choisissez la destination dans {self.panel_info['name']}",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=("#1f538d", "#2563a8")
+        ).pack(pady=(15, 5))
         
-        scroll_frame = ctk.CTkScrollableFrame(selector)
+        ctk.CTkLabel(
+            instructions,
+            text="Vous pouvez importer à la racine ou dans un dossier existant",
+            font=ctk.CTkFont(size=11),
+            text_color=("gray50", "gray60")
+        ).pack(pady=(0, 15))
+        
+        # Variable pour stocker la sélection
+        selected_folder_id = [None]  # None = racine
+        
+        # Frame scrollable pour les options
+        scroll_frame = ctk.CTkScrollableFrame(
+            selector,
+            fg_color=("gray90", "gray20")
+        )
         scroll_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
         
-        for folder in folders:
-            btn = ctk.CTkButton(
+        # Option 1: Importer à la racine (NOUVEAU)
+        root_option = ctk.CTkFrame(
+            scroll_frame,
+            fg_color=("#28a745", "#1e7e34"),
+            corner_radius=10,
+            border_width=2,
+            border_color="white"
+        )
+        root_option.pack(fill="x", pady=10)
+        
+        root_btn = ctk.CTkButton(
+            root_option,
+            text=f"🏠 Importer à la racine de {self.panel_info['name']}",
+            height=60,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="transparent",
+            hover_color=("gray80", "gray40"),
+            text_color="white",
+            command=lambda: [
+                selected_folder_id.__setitem__(0, None),
+                selector.destroy(),
+                self.select_and_import_files(None)
+            ]
+        )
+        root_btn.pack(fill="x", padx=10, pady=10)
+        
+        # Séparateur
+        if folders:
+            ctk.CTkLabel(
                 scroll_frame,
-                text=f"📁 {folder['name']}",
-                height=45,
-                font=ctk.CTkFont(size=14),
-                fg_color=("#1f538d", "#14375e"),
-                hover_color=("#2563a8", "#1a4a7a"),
-                command=lambda fid=folder['id']: [
-                    selected_folder_id.__setitem__(0, fid),
-                    selector.destroy()
-                ]
-            )
-            btn.pack(fill="x", pady=5)
+                text="━━━━━━━ ou dans un dossier existant ━━━━━━━",
+                font=ctk.CTkFont(size=11),
+                text_color=("gray50", "gray60")
+            ).pack(pady=15)
+            
+            # Option 2: Dossiers existants
+            for folder in folders:
+                folder_card = ctk.CTkFrame(
+                    scroll_frame,
+                    fg_color=("#ffffff", "#2a2a2a"),
+                    corner_radius=10,
+                    border_width=1,
+                    border_color=("gray80", "gray40")
+                )
+                folder_card.pack(fill="x", pady=5)
+                
+                folder_btn = ctk.CTkButton(
+                    folder_card,
+                    text=f"📁 {folder['name']}",
+                    height=50,
+                    font=ctk.CTkFont(size=13),
+                    fg_color="transparent",
+                    hover_color=("gray90", "gray30"),
+                    text_color=("black", "white"),
+                    anchor="w",
+                    command=lambda fid=folder['id']: [
+                        selected_folder_id.__setitem__(0, fid),
+                        selector.destroy(),
+                        self.select_and_import_files(fid)
+                    ]
+                )
+                folder_btn.pack(fill="x", padx=10, pady=10)
         
-        selector.wait_window()
-        
-        if not selected_folder_id[0]:
-            return
+        # Bouton annuler
+        ctk.CTkButton(
+            selector,
+            text="❌ Annuler",
+            width=200,
+            height=40,
+            font=ctk.CTkFont(size=14),
+            fg_color=("#dc3545", "#b02a37"),
+            hover_color=("#e04555", "#c03545"),
+            command=selector.destroy
+        ).pack(pady=(0, 20))
+    
+    def select_and_import_files(self, folder_id: Optional[int]):
+        """Sélectionner et importer les fichiers dans le dossier spécifié (ou racine si None)"""
         
         # Sélectionner les fichiers
         file_paths = filedialog.askopenfilenames(
-            title="Sélectionner des fichiers",
+            title="Sélectionner des fichiers à importer",
             filetypes=[
                 ("Tous supportés", "*.pdf *.docx *.xlsx *.doc *.xls"),
                 ("PDF", "*.pdf"),
@@ -570,42 +660,65 @@ class AdminWindow:
             success_count = 0
             error_count = 0
             
+            # Si folder_id est None, créer un dossier "Fichiers importés" à la racine
+            if folder_id is None:
+                # Créer un dossier avec timestamp
+                from datetime import datetime
+                folder_name = f"Fichiers importés - {datetime.now().strftime('%d-%m-%Y %H-%M')}"
+                folder_id = self.db.create_folder(folder_name, None, self.panel)
+                print(f"✅ Dossier créé pour l'import: {folder_name}")
+            
+            # Récupérer les infos du dossier
+            folder = self.db.get_folder(folder_id)
+            folder_name = folder['name'] if folder else "Racine"
+            
             for file_path in file_paths:
                 filename = os.path.basename(file_path)
                 
                 if self.file_handler.is_allowed_file(filename):
-                    folder = self.db.get_folder(selected_folder_id[0])
+                    # Sauvegarder le fichier
                     success, dest_path = self.file_handler.save_file(
                         file_path,
                         filename,
-                        folder['name'] if folder else ""
+                        folder_name
                     )
                     
                     if success:
-                        self.db.add_file(selected_folder_id[0], filename, dest_path)
+                        # Enregistrer dans la BDD
+                        self.db.add_file(folder_id, filename, dest_path)
                         success_count += 1
+                        print(f"✅ Fichier importé: {filename}")
                     else:
                         error_count += 1
+                        print(f"❌ Échec import: {filename}")
                 else:
                     error_count += 1
+                    print(f"⚠️ Extension non autorisée: {filename}")
             
+            # Messages de résultat
             if error_count == 0:
                 messagebox.showinfo(
                     "Succès",
-                    f"✅ {success_count} fichier(s) importé(s) dans {self.panel_info['name']}"
+                    f"✅ {success_count} fichier(s) importé(s) avec succès\n\n"
+                    f"📁 Destination: {folder_name}\n"
+                    f"📂 Panel: {self.panel_info['name']}"
                 )
             else:
                 messagebox.showwarning(
                     "Attention",
-                    f"✅ {success_count} importé(s)\n"
-                    f"⚠️ {error_count} erreur(s)"
+                    f"✅ {success_count} fichier(s) importé(s)\n"
+                    f"⚠️ {error_count} fichier(s) non importé(s)\n\n"
+                    f"Seuls les formats PDF, Word et Excel sont acceptés"
                 )
             
+            # Rafraîchir l'affichage
             self.load_folders()
             self.on_changes()
             
         except Exception as e:
-            messagebox.showerror("Erreur", f"❌ Impossible d'importer:\n{e}")
+            messagebox.showerror("Erreur", f"❌ Impossible d'importer les fichiers:\n\n{e}")
+            import traceback
+            traceback.print_exc()
 
 
 class FileManagerWindow:
