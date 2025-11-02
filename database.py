@@ -1,3 +1,4 @@
+# database.py (version optimisée)
 import sqlite3
 import os
 import hashlib
@@ -12,7 +13,7 @@ except ImportError:
     CRYPTO_AVAILABLE = False
 
 class Database:
-    """Gestion de la base de données SQLite avec sécurité renforcée et système de panels"""
+    """Base de données optimisée avec recherche haute performance"""
     
     # Définition des panels disponibles
     PANELS = {
@@ -37,6 +38,7 @@ class Database:
         self.connect()
         self.migrate_database()
         self.create_tables()
+        self.create_search_indexes()
         self.create_default_admin()
     
     def _get_or_create_encryption_key(self) -> bytes:
@@ -76,7 +78,14 @@ class Database:
             self.conn = sqlite3.connect(self.db_path)
             self.conn.row_factory = sqlite3.Row
             self.cursor = self.conn.cursor()
-            print(f"✅ Connexion à la base de données réussie: {self.db_path}")
+            
+            # Optimisations SQLite pour la performance
+            self.cursor.execute("PRAGMA journal_mode = WAL")
+            self.cursor.execute("PRAGMA synchronous = NORMAL")
+            self.cursor.execute("PRAGMA cache_size = 10000")
+            self.cursor.execute("PRAGMA temp_store = MEMORY")
+            
+            print(f"✅ Connexion optimisée à la base de données: {self.db_path}")
         except sqlite3.Error as e:
             print(f"❌ Erreur de connexion à la base de données: {e}")
             raise
@@ -124,6 +133,14 @@ class Database:
                 if 'file_hash' not in columns:
                     print("🔄 Ajout de la colonne file_hash...")
                     self.cursor.execute("ALTER TABLE files ADD COLUMN file_hash TEXT DEFAULT ''")
+                
+                # Ajouter search_text pour la recherche full-text
+                if 'search_text' not in columns:
+                    print("🔄 Ajout de la colonne search_text pour recherche optimisée...")
+                    self.cursor.execute("ALTER TABLE files ADD COLUMN search_text TEXT DEFAULT ''")
+                    
+                    # Populer search_text avec les noms de fichiers existants
+                    self.cursor.execute("UPDATE files SET search_text = LOWER(filename)")
             
             # Vérifier la table admins pour bcrypt
             self.cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='admins'")
@@ -176,7 +193,7 @@ class Database:
                 )
             """)
             
-            # Table files avec métadonnées
+            # Table files avec métadonnées et recherche optimisée
             self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS files (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,22 +202,63 @@ class Database:
                     filepath TEXT NOT NULL,
                     file_size INTEGER DEFAULT 0,
                     file_hash TEXT DEFAULT '',
+                    search_text TEXT DEFAULT '',
                     uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE
                 )
             """)
-            
-            # Index pour optimiser la recherche
-            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_files_filename ON files(filename)")
-            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_files_uploaded_at ON files(uploaded_at)")
-            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_files_size ON files(file_size)")
-            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_folders_panel ON folders(panel)")
             
             self.conn.commit()
             print("✅ Tables créées avec succès")
         except sqlite3.Error as e:
             print(f"❌ Erreur lors de la création des tables: {e}")
             raise
+    
+    def create_search_indexes(self):
+        """Créer des index optimisés pour la recherche haute performance"""
+        try:
+            # Index principaux pour la recherche
+            search_indexes = [
+                "CREATE INDEX IF NOT EXISTS idx_files_search_text ON files(search_text)",
+                "CREATE INDEX IF NOT EXISTS idx_files_filename_lower ON files(LOWER(filename))",
+                "CREATE INDEX IF NOT EXISTS idx_files_uploaded_at ON files(uploaded_at DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_files_size ON files(file_size)",
+                "CREATE INDEX IF NOT EXISTS idx_files_folder_id ON files(folder_id)",
+                "CREATE INDEX IF NOT EXISTS idx_folders_panel ON folders(panel)",
+                "CREATE INDEX IF NOT EXISTS idx_folders_parent_id ON folders(parent_id)",
+                "CREATE INDEX IF NOT EXISTS idx_folders_name_lower ON folders(LOWER(name))",
+                
+                # Index composite pour recherches complexes
+                "CREATE INDEX IF NOT EXISTS idx_files_folder_filename ON files(folder_id, filename)",
+                "CREATE INDEX IF NOT EXISTS idx_files_size_date ON files(file_size, uploaded_at)",
+                "CREATE INDEX IF NOT EXISTS idx_folders_panel_parent ON folders(panel, parent_id)"
+            ]
+            
+            for index_sql in search_indexes:
+                self.cursor.execute(index_sql)
+            
+            # Créer une vue pour la recherche rapide
+            self.cursor.execute("""
+                CREATE VIEW IF NOT EXISTS v_files_search AS
+                SELECT 
+                    f.id,
+                    f.filename,
+                    f.filepath,
+                    f.file_size,
+                    f.search_text,
+                    f.uploaded_at,
+                    f.folder_id,
+                    fold.name as folder_name,
+                    fold.panel,
+                    fold.parent_id as folder_parent_id
+                FROM files f
+                INNER JOIN folders fold ON f.folder_id = fold.id
+            """)
+            
+            self.conn.commit()
+            print("✅ Index de recherche créés avec succès")
+        except sqlite3.Error as e:
+            print(f"⚠️ Erreur lors de la création des index: {e}")
     
     def create_default_admin(self):
         """Créer un compte admin par défaut avec bcrypt"""
@@ -352,20 +410,38 @@ class Database:
     # ==================== GESTION DES FICHIERS ====================
     
     def add_file(self, folder_id: int, filename: str, filepath: str) -> int:
-        """Ajouter un fichier à la base de données avec métadonnées"""
+        """Ajouter un fichier à la base de données avec métadonnées et recherche optimisée"""
         try:
             file_size = os.path.getsize(filepath) if os.path.exists(filepath) else 0
             file_hash = self._calculate_file_hash(filepath)
             
+            # Créer le texte de recherche optimisé
+            search_text = self._create_search_text(filename)
+            
             self.cursor.execute(
-                "INSERT INTO files (folder_id, filename, filepath, file_size, file_hash) VALUES (?, ?, ?, ?, ?)",
-                (folder_id, filename, filepath, file_size, file_hash)
+                "INSERT INTO files (folder_id, filename, filepath, file_size, file_hash, search_text) VALUES (?, ?, ?, ?, ?, ?)",
+                (folder_id, filename, filepath, file_size, file_hash, search_text)
             )
             self.conn.commit()
             return self.cursor.lastrowid
         except sqlite3.Error as e:
             print(f"❌ Erreur lors de l'ajout du fichier: {e}")
             raise
+    
+    def _create_search_text(self, filename: str) -> str:
+        """Créer un texte de recherche optimisé pour un fichier"""
+        # Normaliser le texte pour la recherche
+        import re
+        
+        # Enlever l'extension et convertir en minuscules
+        name_without_ext = os.path.splitext(filename)[0].lower()
+        
+        # Remplacer les caractères spéciaux par des espaces
+        normalized = re.sub(r'[_\-\.\(\)\[\]{}]', ' ', name_without_ext)
+        
+        # Diviser en mots et rejoindre
+        words = normalized.split()
+        return ' '.join(words)
     
     def _calculate_file_hash(self, filepath: str) -> str:
         """Calculer le hash SHA256 d'un fichier"""
@@ -420,7 +496,84 @@ class Database:
             print(f"❌ Erreur lors de la suppression du fichier: {e}")
             return False
     
-    # ==================== RECHERCHE AVANCÉE ====================
+    # ==================== RECHERCHE ULTRA-RAPIDE ====================
+    
+    def search_files_fast(self, 
+                         filename: str = "", 
+                         extension: str = "",
+                         panel: Optional[str] = None,
+                         limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Recherche ultra-rapide de fichiers avec cache et index optimisés
+        
+        Args:
+            filename: Nom du fichier à rechercher
+            extension: Extension à filtrer
+            panel: Panel à filtrer
+            limit: Limite de résultats
+            
+        Returns:
+            Liste des fichiers trouvés
+        """
+        try:
+            conditions = []
+            params = []
+            
+            # Utiliser la vue optimisée pour la recherche
+            base_query = """
+                SELECT 
+                    id, filename, filepath, file_size, uploaded_at,
+                    folder_id, folder_name, panel
+                FROM v_files_search
+            """
+            
+            # Recherche par nom - utiliser l'index de recherche
+            if filename:
+                search_terms = filename.lower().split()
+                if len(search_terms) == 1:
+                    # Recherche simple - utiliser l'index
+                    conditions.append("search_text LIKE ?")
+                    params.append(f"%{search_terms[0]}%")
+                else:
+                    # Recherche multiple - combiner les termes
+                    term_conditions = []
+                    for term in search_terms:
+                        term_conditions.append("search_text LIKE ?")
+                        params.append(f"%{term}%")
+                    conditions.append("(" + " AND ".join(term_conditions) + ")")
+            
+            # Filtre par extension
+            if extension:
+                conditions.append("filename LIKE ?")
+                params.append(f"%.{extension.lower()}")
+            
+            # Filtre par panel
+            if panel:
+                conditions.append("panel = ?")
+                params.append(panel)
+            
+            # Construire la requête finale
+            if conditions:
+                query = base_query + " WHERE " + " AND ".join(conditions)
+            else:
+                query = base_query
+            
+            query += f" ORDER BY uploaded_at DESC LIMIT {limit}"
+            
+            # Exécuter la requête optimisée
+            start_time = datetime.now()
+            self.cursor.execute(query, params)
+            results = [dict(row) for row in self.cursor.fetchall()]
+            end_time = datetime.now()
+            
+            search_time = (end_time - start_time).total_seconds()
+            print(f"🔍 Recherche rapide terminée en {search_time:.3f}s - {len(results)} résultats")
+            
+            return results
+            
+        except sqlite3.Error as e:
+            print(f"❌ Erreur lors de la recherche rapide: {e}")
+            return []
     
     def search_files(self, 
                     filename: str = "", 
@@ -431,7 +584,13 @@ class Database:
                     min_size: Optional[int] = None,
                     max_size: Optional[int] = None,
                     panel: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Recherche avancée de fichiers avec filtre par panel"""
+        """Recherche avancée de fichiers (rétrocompatibilité)"""
+        
+        # Pour les recherches simples, utiliser la version rapide
+        if not any([date_from, date_to, folder_id, min_size, max_size]):
+            return self.search_files_fast(filename, extension, panel)
+        
+        # Sinon, utiliser la recherche complète
         try:
             conditions = []
             params = []
@@ -540,3 +699,4 @@ class Database:
         if self.conn:
             self.conn.close()
             print("✅ Connexion à la base de données fermée")
+

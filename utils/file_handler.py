@@ -1,12 +1,16 @@
+# utils/file_handler.py
 import os
 import shutil
 import subprocess
 import platform
 from typing import Tuple, Optional
 from pathlib import Path
+from cryptography.fernet import Fernet
+import json
+import base64
 
 class FileHandler:
-    """Gestionnaire de fichiers avec support complet de l'arborescence et des panels"""
+    """Gestionnaire de fichiers avec cryptage et structure invisible optimisée"""
     
     # Extensions autorisées
     ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.xlsx', '.doc', '.xls'}
@@ -22,17 +26,95 @@ class FileHandler:
         'default': '📄'
     }
     
+    # Structure des panels
+    PANEL_FOLDERS = {
+        'certification': 'Certification',
+        'entete': 'En-tête', 
+        'interface_emp': 'Interface Employés',
+        'autre': 'Autre'
+    }
+    
     def __init__(self, upload_dir: str = "uploads"):
         self.upload_dir = upload_dir
-        self.ensure_upload_directory()
+        self.crypto_dir = os.path.join(upload_dir, ".encrypted")
+        self.metadata_file = os.path.join(upload_dir, ".metadata.json")
+        
+        # Initialiser le cryptage
+        self.encryption_key = self._get_or_create_encryption_key()
+        self.fernet = Fernet(self.encryption_key)
+        
+        self.ensure_directory_structure()
+        self.load_metadata()
     
-    def ensure_upload_directory(self):
-        """S'assurer que le répertoire d'upload existe"""
-        if not os.path.exists(self.upload_dir):
-            os.makedirs(self.upload_dir)
-            print(f"✅ Répertoire d'upload créé: {self.upload_dir}")
-        else:
-            print(f"✅ Répertoire d'upload existant: {self.upload_dir}")
+    def _get_or_create_encryption_key(self) -> bytes:
+        """Générer ou récupérer la clé de chiffrement"""
+        key_file = os.path.join(self.upload_dir, ".encryption.key")
+        if os.path.exists(key_file):
+            try:
+                with open(key_file, 'rb') as f:
+                    return f.read()
+            except:
+                pass
+        
+        # Créer nouvelle clé
+        key = Fernet.generate_key()
+        os.makedirs(self.upload_dir, exist_ok=True)
+        with open(key_file, 'wb') as f:
+            f.write(key)
+        
+        # Masquer le fichier de clé sur Windows
+        if platform.system() == "Windows":
+            try:
+                import ctypes
+                ctypes.windll.kernel32.SetFileAttributesW(key_file, 0x02)
+            except:
+                pass
+                
+        print("🔑 Nouvelle clé de chiffrement générée")
+        return key
+    
+    def ensure_directory_structure(self):
+        """Créer la structure de dossiers invisibles"""
+        # Dossier principal
+        os.makedirs(self.upload_dir, exist_ok=True)
+        
+        # Dossier de fichiers cryptés
+        os.makedirs(self.crypto_dir, exist_ok=True)
+        
+        # Dossiers pour chaque panel
+        for panel_key, panel_name in self.PANEL_FOLDERS.items():
+            panel_path = os.path.join(self.crypto_dir, panel_key)
+            os.makedirs(panel_path, exist_ok=True)
+        
+        # Masquer les dossiers système sur Windows
+        if platform.system() == "Windows":
+            try:
+                import ctypes
+                ctypes.windll.kernel32.SetFileAttributesW(self.crypto_dir, 0x02)
+                ctypes.windll.kernel32.SetFileAttributesW(self.metadata_file, 0x02)
+            except:
+                pass
+        
+        print("✅ Structure de dossiers invisibles créée")
+    
+    def load_metadata(self):
+        """Charger les métadonnées des fichiers"""
+        try:
+            if os.path.exists(self.metadata_file):
+                with open(self.metadata_file, 'r', encoding='utf-8') as f:
+                    self.metadata = json.load(f)
+            else:
+                self.metadata = {}
+        except:
+            self.metadata = {}
+    
+    def save_metadata(self):
+        """Sauvegarder les métadonnées"""
+        try:
+            with open(self.metadata_file, 'w', encoding='utf-8') as f:
+                json.dump(self.metadata, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"⚠️ Erreur sauvegarde métadonnées: {e}")
     
     def get_file_icon(self, extension: str) -> str:
         """Récupérer l'icône correspondant à une extension"""
@@ -43,316 +125,331 @@ class FileHandler:
         ext = os.path.splitext(filename)[1].lower()
         return ext in self.ALLOWED_EXTENSIONS
     
-    def count_files_to_import(self, folder_path: str) -> int:
-        """
-        Compter le nombre total de fichiers valides à importer dans un dossier (récursif)
-        
-        Args:
-            folder_path: Chemin du dossier à analyser
-            
-        Returns:
-            Nombre total de fichiers importables
-        """
-        total_count = 0
-        
+    def encrypt_file(self, source_path: str) -> bytes:
+        """Chiffrer un fichier"""
         try:
-            if not os.path.exists(folder_path):
-                print(f"⚠️ Dossier introuvable: {folder_path}")
-                return 0
-            
-            if not os.path.isdir(folder_path):
-                print(f"⚠️ Le chemin n'est pas un dossier: {folder_path}")
-                return 0
-            
-            # Parcourir récursivement tous les fichiers
-            for root, dirs, files in os.walk(folder_path):
-                for filename in files:
-                    if self.is_allowed_file(filename):
-                        total_count += 1
-            
-            print(f"📊 Total de fichiers à importer: {total_count}")
-            return total_count
-            
+            with open(source_path, 'rb') as f:
+                file_data = f.read()
+            return self.fernet.encrypt(file_data)
         except Exception as e:
-            print(f"❌ Erreur lors du comptage des fichiers: {e}")
-            return 0
+            print(f"❌ Erreur chiffrement: {e}")
+            raise
     
-    def save_file(self, source_path: str, filename: str, subfolder: str = "") -> Tuple[bool, str]:
+    def decrypt_file(self, encrypted_data: bytes) -> bytes:
+        """Déchiffrer un fichier"""
+        try:
+            return self.fernet.decrypt(encrypted_data)
+        except Exception as e:
+            print(f"❌ Erreur déchiffrement: {e}")
+            raise
+    
+    def save_file(self, source_path: str, filename: str, panel: str = "interface_emp") -> Tuple[bool, str]:
         """
-        Enregistrer un fichier dans le répertoire d'upload
+        Enregistrer un fichier crypté dans la structure invisible
         
         Args:
             source_path: Chemin source du fichier
             filename: Nom du fichier
-            subfolder: Sous-dossier optionnel
+            panel: Panel de destination
             
         Returns:
-            Tuple (succès, chemin_destination)
+            Tuple (succès, chemin_crypté)
         """
         try:
-            # Vérifier que le fichier source existe
             if not os.path.exists(source_path):
                 print(f"❌ Fichier source introuvable: {source_path}")
                 return False, ""
             
-            # Créer le chemin de destination
-            if subfolder:
-                dest_dir = os.path.join(self.upload_dir, subfolder)
-                os.makedirs(dest_dir, exist_ok=True)
-            else:
-                dest_dir = self.upload_dir
+            if not self.is_allowed_file(filename):
+                print(f"❌ Type de fichier non autorisé: {filename}")
+                return False, ""
             
-            dest_path = os.path.join(dest_dir, filename)
+            # Générer un nom de fichier crypté unique
+            import uuid
+            import hashlib
             
-            # Gérer les doublons
-            if os.path.exists(dest_path):
-                base, ext = os.path.splitext(filename)
-                counter = 1
-                while os.path.exists(os.path.join(dest_dir, f"{base}_{counter}{ext}")):
-                    counter += 1
-                filename = f"{base}_{counter}{ext}"
-                dest_path = os.path.join(dest_dir, filename)
+            file_id = str(uuid.uuid4())
+            original_hash = hashlib.sha256(filename.encode()).hexdigest()[:8]
+            encrypted_filename = f"{file_id}_{original_hash}.enc"
             
-            # Copier le fichier
-            shutil.copy2(source_path, dest_path)
-            print(f"✅ Fichier copié: {filename} -> {dest_path}")
+            # Déterminer le dossier de destination
+            panel_dir = os.path.join(self.crypto_dir, panel)
+            dest_path = os.path.join(panel_dir, encrypted_filename)
             
+            # Chiffrer et sauvegarder le fichier
+            encrypted_data = self.encrypt_file(source_path)
+            with open(dest_path, 'wb') as f:
+                f.write(encrypted_data)
+            
+            # Sauvegarder les métadonnées
+            self.metadata[encrypted_filename] = {
+                'original_name': filename,
+                'panel': panel,
+                'size': os.path.getsize(source_path),
+                'created_at': os.path.getctime(source_path),
+                'file_id': file_id
+            }
+            self.save_metadata()
+            
+            print(f"✅ Fichier crypté sauvegardé: {filename} -> {encrypted_filename}")
             return True, dest_path
             
         except Exception as e:
-            print(f"❌ Erreur lors de la copie du fichier {filename}: {e}")
+            print(f"❌ Erreur lors de la sauvegarde cryptée: {e}")
             return False, ""
     
-    def save_files_from_folder(self, folder_path: str, db, parent_folder_id: Optional[int] = None) -> int:
+    def save_files_from_folder_direct(self, folder_path: str, db, panel: str = 'interface_emp', 
+                                    progress_callback=None) -> int:
         """
-        Importer un dossier complet avec TOUS ses fichiers et sous-dossiers
-        (Version compatible avec ancienne base de données sans panel)
+        Importer des fichiers directement dans un panel sans créer de dossier parent
         
         Args:
             folder_path: Chemin du dossier à importer
             db: Instance de la base de données
-            parent_folder_id: ID du dossier parent dans la BDD
-            
-        Returns:
-            Nombre total de fichiers importés
-        """
-        return self.save_files_from_folder_with_panel(folder_path, db, parent_folder_id, 'interface_emp')
-    
-    def save_files_from_folder_with_panel(self, folder_path: str, db, 
-                                          parent_folder_id: Optional[int] = None,
-                                          panel: str = 'interface_emp',
-                                          progress_callback=None,
-                                          total: int = 0) -> int:
-        """
-        Importer un dossier complet avec TOUS ses fichiers et sous-dossiers dans un panel spécifique
-        
-        Args:
-            folder_path: Chemin du dossier à importer
-            db: Instance de la base de données
-            parent_folder_id: ID du dossier parent dans la BDD
-            panel: Panel cible pour l'import
-            progress_callback: Fonction de callback pour la progression (current, total)
-            total: Nombre total de fichiers (pour la progression)
+            panel: Panel de destination
+            progress_callback: Fonction de callback pour la progression
             
         Returns:
             Nombre total de fichiers importés
         """
         total_files = 0
-        current_progress = [0]  # Liste mutable pour partager entre fonctions récursives
         
         try:
-            folder_name = os.path.basename(folder_path)
-            print(f"\n📁 Importation du dossier: {folder_name} dans panel {panel}")
+            if not os.path.exists(folder_path):
+                print(f"❌ Dossier introuvable: {folder_path}")
+                return 0
             
-            # Créer le dossier dans la base de données avec le panel
-            current_folder_id = db.create_folder(folder_name, parent_folder_id, panel)
-            print(f"   ✅ Dossier créé en BDD (ID: {current_folder_id}, Panel: {panel})")
+            # Compter le nombre total de fichiers à importer
+            total_count = self._count_files_recursive(folder_path)
+            current_count = [0]  # Liste mutable pour partager entre fonctions
             
-            # Lister tous les éléments du dossier
-            items = os.listdir(folder_path)
+            print(f"📊 Import direct de {total_count} fichiers dans le panel {panel}")
             
-            # Traiter les fichiers
-            for item in items:
-                item_path = os.path.join(folder_path, item)
-                
-                if os.path.isfile(item_path):
-                    # C'est un fichier
-                    if self.is_allowed_file(item):
-                        print(f"   📄 Importation du fichier: {item}")
-                        
-                        # Copier le fichier physiquement
-                        success, dest_path = self.save_file(item_path, item, folder_name)
-                        
-                        if success:
-                            # Enregistrer dans la base de données
-                            db.add_file(current_folder_id, item, dest_path)
-                            total_files += 1
-                            current_progress[0] += 1
-                            
-                            # Appeler le callback de progression
-                            if progress_callback and total > 0:
-                                progress_callback(current_progress[0], total)
-                            
-                            print(f"      ✅ Fichier importé avec succès ({current_progress[0]}/{total})")
-                        else:
-                            print(f"      ❌ Échec de l'importation du fichier")
-                    else:
-                        print(f"   ⚠️ Fichier ignoré (extension non autorisée): {item}")
+            # Obtenir ou créer le dossier racine du panel
+            root_folders = db.get_subfolders(parent_id=None, panel=panel)
+            if not root_folders:
+                # Créer le dossier racine du panel s'il n'existe pas
+                root_folder_id = db.create_folder(self.PANEL_FOLDERS[panel], None, panel)
+            else:
+                root_folder_id = root_folders[0]['id']
             
-            # Traiter les sous-dossiers récursivement
-            for item in items:
-                item_path = os.path.join(folder_path, item)
-                
-                if os.path.isdir(item_path):
-                    # C'est un sous-dossier, traiter récursivement
-                    print(f"   📂 Sous-dossier détecté: {item}")
-                    sub_count = self._import_subfolder_recursive(
-                        item_path, 
-                        db, 
-                        current_folder_id, 
-                        panel, 
-                        progress_callback, 
-                        total, 
-                        current_progress
-                    )
-                    total_files += sub_count
+            # Importer tous les fichiers directement
+            if os.path.isfile(folder_path):
+                # C'est un fichier unique
+                total_files = self._import_single_file(
+                    folder_path, db, root_folder_id, panel, progress_callback, total_count, current_count
+                )
+            else:
+                # C'est un dossier - importer récursivement
+                total_files = self._import_folder_contents_direct(
+                    folder_path, db, root_folder_id, panel, progress_callback, total_count, current_count
+                )
             
-            print(f"✅ Dossier '{folder_name}' importé: {total_files} fichier(s)")
+            print(f"✅ Import direct terminé: {total_files} fichier(s) dans {panel}")
             return total_files
             
         except Exception as e:
-            print(f"❌ Erreur lors de l'importation du dossier: {e}")
+            print(f"❌ Erreur lors de l'import direct: {e}")
             import traceback
             traceback.print_exc()
             return total_files
     
-    def _import_subfolder_recursive(self, folder_path: str, db, 
-                                   parent_folder_id: int,
-                                   panel: str,
-                                   progress_callback,
-                                   total: int,
-                                   current_progress: list) -> int:
-        """
-        Fonction auxiliaire pour importer récursivement un sous-dossier
-        
-        Args:
-            folder_path: Chemin du dossier
-            db: Instance BDD
-            parent_folder_id: ID du parent
-            panel: Panel
-            progress_callback: Callback de progression
-            total: Total de fichiers
-            current_progress: Liste mutable [count] pour partager la progression
+    def _count_files_recursive(self, path: str) -> int:
+        """Compter récursivement tous les fichiers valides"""
+        count = 0
+        try:
+            if os.path.isfile(path):
+                return 1 if self.is_allowed_file(os.path.basename(path)) else 0
             
-        Returns:
-            Nombre de fichiers importés
-        """
+            for root, dirs, files in os.walk(path):
+                for filename in files:
+                    if self.is_allowed_file(filename):
+                        count += 1
+            return count
+        except:
+            return 0
+    
+    def _import_single_file(self, file_path: str, db, folder_id: int, panel: str,
+                          progress_callback, total: int, current_count: list) -> int:
+        """Importer un fichier unique"""
+        try:
+            filename = os.path.basename(file_path)
+            if not self.is_allowed_file(filename):
+                return 0
+            
+            # Sauvegarder le fichier crypté
+            success, dest_path = self.save_file(file_path, filename, panel)
+            
+            if success:
+                # Enregistrer dans la base de données
+                db.add_file(folder_id, filename, dest_path)
+                current_count[0] += 1
+                
+                if progress_callback:
+                    progress_callback(current_count[0], total)
+                
+                print(f"✅ Fichier importé: {filename}")
+                return 1
+            
+            return 0
+        except Exception as e:
+            print(f"❌ Erreur import fichier {file_path}: {e}")
+            return 0
+    
+    def _import_folder_contents_direct(self, folder_path: str, db, root_folder_id: int, panel: str,
+                                     progress_callback, total: int, current_count: list) -> int:
+        """Importer le contenu d'un dossier de manière directe et plate"""
         total_files = 0
         
         try:
+            # Créer une structure plate des fichiers avec préfixes
             folder_name = os.path.basename(folder_path)
             
-            # Créer le sous-dossier
-            current_folder_id = db.create_folder(folder_name, parent_folder_id, panel)
-            
-            # Lister les éléments
-            items = os.listdir(folder_path)
-            
-            # Traiter les fichiers
-            for item in items:
-                item_path = os.path.join(folder_path, item)
+            for root, dirs, files in os.walk(folder_path):
+                # Calculer le chemin relatif pour créer un préfixe
+                relative_path = os.path.relpath(root, folder_path)
+                if relative_path == ".":
+                    prefix = ""
+                else:
+                    prefix = relative_path.replace(os.sep, "_") + "_"
                 
-                if os.path.isfile(item_path):
-                    if self.is_allowed_file(item):
-                        success, dest_path = self.save_file(item_path, item, folder_name)
+                # Traiter chaque fichier
+                for filename in files:
+                    if self.is_allowed_file(filename):
+                        file_path = os.path.join(root, filename)
+                        
+                        # Créer un nom avec préfixe pour éviter les conflits
+                        if prefix:
+                            prefixed_filename = f"{prefix}{filename}"
+                        else:
+                            prefixed_filename = filename
+                        
+                        # Sauvegarder le fichier crypté
+                        success, dest_path = self.save_file(file_path, prefixed_filename, panel)
                         
                         if success:
-                            db.add_file(current_folder_id, item, dest_path)
+                            # Enregistrer dans la base de données
+                            db.add_file(root_folder_id, prefixed_filename, dest_path)
                             total_files += 1
-                            current_progress[0] += 1
+                            current_count[0] += 1
                             
-                            # Callback de progression
-                            if progress_callback and total > 0:
-                                progress_callback(current_progress[0], total)
-            
-            # Traiter les sous-dossiers récursivement
-            for item in items:
-                item_path = os.path.join(folder_path, item)
-                
-                if os.path.isdir(item_path):
-                    sub_count = self._import_subfolder_recursive(
-                        item_path, 
-                        db, 
-                        current_folder_id, 
-                        panel, 
-                        progress_callback, 
-                        total, 
-                        current_progress
-                    )
-                    total_files += sub_count
+                            if progress_callback:
+                                progress_callback(current_count[0], total)
+                            
+                            print(f"✅ Fichier importé: {prefixed_filename}")
             
             return total_files
             
         except Exception as e:
-            print(f"❌ Erreur import sous-dossier: {e}")
+            print(f"❌ Erreur import dossier {folder_path}: {e}")
             return total_files
     
     def open_file(self, filepath: str) -> bool:
         """
-        Ouvrir un fichier avec l'application par défaut du système
+        Ouvrir un fichier crypté en le déchiffrant temporairement
         
         Args:
-            filepath: Chemin du fichier à ouvrir
+            filepath: Chemin du fichier crypté
             
         Returns:
             True si succès, False sinon
         """
         try:
             if not os.path.exists(filepath):
-                print(f"❌ Fichier introuvable: {filepath}")
+                print(f"❌ Fichier crypté introuvable: {filepath}")
                 return False
             
+            # Récupérer le nom original depuis les métadonnées
+            encrypted_filename = os.path.basename(filepath)
+            if encrypted_filename not in self.metadata:
+                print(f"❌ Métadonnées introuvables pour: {encrypted_filename}")
+                return False
+            
+            original_name = self.metadata[encrypted_filename]['original_name']
+            
+            # Créer un fichier temporaire déchiffré
+            temp_dir = os.path.join(self.upload_dir, ".temp")
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            temp_file = os.path.join(temp_dir, original_name)
+            
+            # Déchiffrer et sauvegarder temporairement
+            with open(filepath, 'rb') as f:
+                encrypted_data = f.read()
+            
+            decrypted_data = self.decrypt_file(encrypted_data)
+            
+            with open(temp_file, 'wb') as f:
+                f.write(decrypted_data)
+            
+            # Ouvrir le fichier temporaire
             system = platform.system()
             
             if system == 'Windows':
-                os.startfile(filepath)
+                os.startfile(temp_file)
             elif system == 'Darwin':  # macOS
-                subprocess.run(['open', filepath])
+                subprocess.run(['open', temp_file])
             else:  # Linux
-                subprocess.run(['xdg-open', filepath])
+                subprocess.run(['xdg-open', temp_file])
             
-            print(f"✅ Fichier ouvert: {filepath}")
+            # Programmer la suppression du fichier temporaire après 30 secondes
+            import threading
+            import time
+            
+            def cleanup_temp_file():
+                time.sleep(30)
+                try:
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+                        print(f"🧹 Fichier temporaire supprimé: {original_name}")
+                except:
+                    pass
+            
+            cleanup_thread = threading.Thread(target=cleanup_temp_file, daemon=True)
+            cleanup_thread.start()
+            
+            print(f"✅ Fichier déchiffré et ouvert: {original_name}")
             return True
             
         except Exception as e:
-            print(f"❌ Erreur lors de l'ouverture du fichier: {e}")
+            print(f"❌ Erreur lors de l'ouverture du fichier crypté: {e}")
             return False
     
     def delete_file(self, filepath: str) -> bool:
         """
-        Supprimer un fichier physique
+        Supprimer un fichier crypté et ses métadonnées
         
         Args:
-            filepath: Chemin du fichier à supprimer
+            filepath: Chemin du fichier crypté à supprimer
             
         Returns:
             True si succès, False sinon
         """
         try:
+            encrypted_filename = os.path.basename(filepath)
+            
+            # Supprimer le fichier physique
             if os.path.exists(filepath):
                 os.remove(filepath)
-                print(f"✅ Fichier supprimé: {filepath}")
-                return True
-            else:
-                print(f"⚠️ Fichier déjà absent: {filepath}")
-                return True
+                print(f"✅ Fichier crypté supprimé: {encrypted_filename}")
+            
+            # Supprimer les métadonnées
+            if encrypted_filename in self.metadata:
+                del self.metadata[encrypted_filename]
+                self.save_metadata()
+                print(f"✅ Métadonnées supprimées: {encrypted_filename}")
+            
+            return True
         except Exception as e:
-            print(f"❌ Erreur lors de la suppression du fichier: {e}")
+            print(f"❌ Erreur lors de la suppression: {e}")
             return False
     
     def get_file_size(self, filepath: str) -> int:
-        """Récupérer la taille d'un fichier en octets"""
+        """Récupérer la taille d'un fichier crypté depuis les métadonnées"""
         try:
+            encrypted_filename = os.path.basename(filepath)
+            if encrypted_filename in self.metadata:
+                return self.metadata[encrypted_filename].get('size', 0)
             return os.path.getsize(filepath) if os.path.exists(filepath) else 0
         except:
             return 0
@@ -373,3 +470,14 @@ class FileHandler:
         """Vérifier si un fichier est téléchargeable (pas PDF)"""
         ext = os.path.splitext(filename)[1].lower()
         return ext in {'.docx', '.xlsx', '.doc', '.xls'}
+    
+    def get_original_filename(self, encrypted_filepath: str) -> str:
+        """Récupérer le nom original d'un fichier crypté"""
+        try:
+            encrypted_filename = os.path.basename(encrypted_filepath)
+            if encrypted_filename in self.metadata:
+                return self.metadata[encrypted_filename]['original_name']
+            return encrypted_filename
+        except:
+            return os.path.basename(encrypted_filepath)
+
